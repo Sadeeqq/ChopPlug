@@ -1,0 +1,634 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum VerificationStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  RESUBMISSION_REQUIRED
+  SUSPENDED
+}
+
+enum StoreType {
+  VENDOR
+  RESTAURANT
+}
+
+enum StoreStatus {
+  OPEN
+  CLOSED
+  TEMPORARILY_UNAVAILABLE
+  SUSPENDED
+}
+
+enum RiderCapability {
+  WALKING
+  BICYCLE
+  MOTORCYCLE
+  CAR
+}
+
+enum RiderStatus {
+  ONLINE
+  OFFLINE
+  SUSPENDED
+}
+
+enum OrderType {
+  DELIVERY
+  PICKUP
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PENDING_RESTAURANT
+  PREPARING
+  READY
+  FINDING_RIDER
+  READY_FOR_PICKUP // Switch to pickup or no rider
+  PICKED_UP
+  ON_THE_WAY
+  DELIVERED
+  REJECTED
+  RESTAURANT_TIMEOUT
+  NO_RIDER_AVAILABLE
+  CANCELLED
+  CUSTOMER_UNAVAILABLE
+  RETURNING_TO_RESTAURANT
+}
+
+enum DeliveryMode {
+  WALKING
+  VEHICLE
+}
+
+enum PaymentStatus {
+  INITIALIZED
+  PENDING
+  SUCCESS
+  FAILED
+  REVERSED
+}
+
+enum RefundStatus {
+  INITIATED
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum RefundType {
+  FULL
+  PARTIAL
+  DELIVERY_ONLY
+}
+
+enum SettlementStatus {
+  PENDING
+  HELD
+  PAID
+  FAILED
+}
+
+enum DisputeStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  CLOSED
+}
+
+enum DisputeReason {
+  MISSING_ITEM
+  WRONG_ITEM
+  QUALITY_ISSUE
+  NEVER_RECEIVED
+  OTHER
+}
+
+enum DisputeResolution {
+  FULL_REFUND
+  PARTIAL_REFUND
+  DELIVERY_REFUND
+  REPLACEMENT
+  NO_REFUND
+}
+
+enum SupportTicketStatus {
+  OPEN
+  IN_REVIEW
+  WAITING_FOR_USER
+  RESOLVED
+  CLOSED
+}
+
+// ---------------------------------------------------------
+// CORE USERS & ACCOUNTS
+// ---------------------------------------------------------
+
+model User {
+  id                String             @id @default(uuid())
+  email             String             @unique
+  name              String
+  phone             String
+  passwordHash      String
+  emailVerified     Boolean            @default(false)
+  status            AccountStatus      @default(ACTIVE)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  orders            Order[]
+  payments          Payment[]
+  stores            Store[]
+  riderProfile      Rider?
+  verificationApps  VerificationApplication[]
+  disputes          Dispute[]
+  supportTickets    SupportTicket[]
+  reportsMade       Report[]           @relation("ReportingUser")
+  reportsReceived   Report[]           @relation("ReportedUser")
+  notifications     Notification[]
+}
+
+model AdminAccount {
+  id                String             @id @default(uuid())
+  adminId           String             @unique // Admin login ID
+  email             String             @unique
+  name              String
+  passwordHash      String
+  status            AccountStatus      @default(ACTIVE)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  roles             AdminAccountRole[]
+  auditLogs         AdminAuditLog[]
+}
+
+// ---------------------------------------------------------
+// RBAC (Admins)
+// ---------------------------------------------------------
+
+model AdminRole {
+  id          String                 @id @default(uuid())
+  name        String                 @unique
+  description String?
+  permissions AdminRolePermission[]
+  accounts    AdminAccountRole[]
+}
+
+model AdminPermission {
+  id          String                 @id @default(uuid())
+  name        String                 @unique
+  description String?
+  roles       AdminRolePermission[]
+}
+
+model AdminRolePermission {
+  roleId       String
+  permissionId String
+
+  role         AdminRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   AdminPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model AdminAccountRole {
+  adminAccountId String
+  roleId         String
+
+  adminAccount   AdminAccount @relation(fields: [adminAccountId], references: [id], onDelete: Cascade)
+  role           AdminRole    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([adminAccountId, roleId])
+}
+
+// ---------------------------------------------------------
+// SELLERS & RIDERS
+// ---------------------------------------------------------
+
+model Store {
+  id                String             @id @default(uuid())
+  ownerId           String
+  storeType         StoreType
+  name              String
+  description       String?
+  phone             String
+  campusLocationId  String
+  deliveryZoneId    String
+  status            StoreStatus        @default(CLOSED)
+  verificationStatus VerificationStatus @default(PENDING)
+  logoUrl           String?
+  openingHours      Json?              // Flexible structure for MVP
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  owner             User               @relation(fields: [ownerId], references: [id])
+  campusLocation    CampusLocation     @relation(fields: [campusLocationId], references: [id])
+  deliveryZone      DeliveryZone       @relation("StoreDeliveryZone", fields: [deliveryZoneId], references: [id])
+  products          Product[]
+  orders            Order[]
+  settlements       Settlement[]
+  deliveryRequests  DeliveryRequest[]
+}
+
+model Rider {
+  id                String             @id @default(uuid())
+  userId            String             @unique
+  capability        RiderCapability
+  status            RiderStatus        @default(OFFLINE)
+  verificationStatus VerificationStatus @default(PENDING)
+  currentZoneId     String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  user              User               @relation(fields: [userId], references: [id])
+  currentZone       DeliveryZone?      @relation("RiderCurrentZone", fields: [currentZoneId], references: [id])
+  orders            Order[]
+  settlements       Settlement[]
+  deliveryRequests  DeliveryRequest[]
+}
+
+// ---------------------------------------------------------
+// CATALOG
+// ---------------------------------------------------------
+
+model Category {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products    Product[]
+}
+
+model Product {
+  id          String    @id @default(uuid())
+  storeId     String
+  categoryId  String
+  name        String
+  description String?
+  price       Decimal   @db.Decimal(10, 2) // Vendor base price
+  imageUrl    String?
+  isAvailable Boolean   @default(true)
+  isSoldOut   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  store       Store     @relation(fields: [storeId], references: [id])
+  category    Category  @relation(fields: [categoryId], references: [id])
+}
+
+// ---------------------------------------------------------
+// LOCATIONS & ZONES
+// ---------------------------------------------------------
+
+model CampusLocation {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  zoneId      String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  zone        DeliveryZone @relation(fields: [zoneId], references: [id])
+  stores      Store[]
+  orders      Order[]
+}
+
+model DeliveryZone {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  locations       CampusLocation[]
+  stores          Store[]          @relation("StoreDeliveryZone")
+  ridersCurrently Rider[]          @relation("RiderCurrentZone")
+  pricingFrom     DeliveryPricing[] @relation("FromZone")
+  pricingTo       DeliveryPricing[] @relation("ToZone")
+  etaFrom         EtaMatrix[]       @relation("EtaFromZone")
+  etaTo           EtaMatrix[]       @relation("EtaToZone")
+}
+
+model DeliveryPricing {
+  id             String       @id @default(uuid())
+  fromZoneId     String
+  toZoneId       String
+  mode           DeliveryMode
+  fee            Decimal      @db.Decimal(10, 2)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  fromZone       DeliveryZone @relation("FromZone", fields: [fromZoneId], references: [id])
+  toZone         DeliveryZone @relation("ToZone", fields: [toZoneId], references: [id])
+
+  @@unique([fromZoneId, toZoneId, mode])
+}
+
+model EtaMatrix {
+  id             String       @id @default(uuid())
+  fromZoneId     String
+  toZoneId       String
+  mode           DeliveryMode
+  minMinutes     Int
+  maxMinutes     Int
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  fromZone       DeliveryZone @relation("EtaFromZone", fields: [fromZoneId], references: [id])
+  toZone         DeliveryZone @relation("EtaToZone", fields: [toZoneId], references: [id])
+
+  @@unique([fromZoneId, toZoneId, mode])
+}
+
+// ---------------------------------------------------------
+// ORDERS
+// ---------------------------------------------------------
+
+model Order {
+  id                String       @id @default(uuid())
+  reference         String       @unique // E.g., ORD-12345
+  customerId        String
+  storeId           String
+  riderId           String?
+  orderType         OrderType
+  deliveryMode      DeliveryMode?
+  locationId        String?
+  status            OrderStatus  @default(PENDING_PAYMENT)
+  
+  // Financial snapshots (append-oriented, not overwritten)
+  totalAmount       Decimal      @db.Decimal(10, 2) // Paid by customer
+  productTotal      Decimal      @db.Decimal(10, 2) // Marked up product total
+  deliveryFee       Decimal      @db.Decimal(10, 2)
+  platformMarkup    Decimal      @db.Decimal(10, 2) // Extracted markup value
+  platformCommission Decimal     @db.Decimal(10, 2) // Extracted delivery commission
+  vendorEarnings    Decimal      @db.Decimal(10, 2)
+  riderEarnings     Decimal      @db.Decimal(10, 2)
+  
+  specialNotes      String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  customer          User         @relation(fields: [customerId], references: [id])
+  store             Store        @relation(fields: [storeId], references: [id])
+  rider             Rider?       @relation(fields: [riderId], references: [id])
+  location          CampusLocation? @relation(fields: [locationId], references: [id])
+  
+  items             OrderItem[]
+  statusHistory     OrderStatusHistory[]
+  deliveryRequests  DeliveryRequest[]
+  handoff           HandoffVerification?
+  payment           Payment?
+  refunds           Refund[]
+  settlements       Settlement[]
+  disputes          Dispute[]
+}
+
+model OrderItem {
+  id                String   @id @default(uuid())
+  orderId           String
+  productId         String?  // Optional in case product is deleted, historical data preserved
+  productName       String   // Snapshot
+  quantity          Int
+  vendorUnitPrice   Decimal  @db.Decimal(10, 2) // Snapshot
+  customerUnitPrice Decimal  @db.Decimal(10, 2) // Snapshot (incl. markup)
+  totalPrice        Decimal  @db.Decimal(10, 2) // Snapshot
+  createdAt         DateTime @default(now())
+
+  order             Order    @relation(fields: [orderId], references: [id])
+}
+
+model OrderStatusHistory {
+  id          String      @id @default(uuid())
+  orderId     String
+  status      OrderStatus
+  notes       String?
+  createdAt   DateTime    @default(now())
+
+  order       Order       @relation(fields: [orderId], references: [id])
+}
+
+model DeliveryRequest {
+  id          String   @id @default(uuid())
+  orderId     String
+  storeId     String
+  riderId     String
+  status      String   // PENDING, ACCEPTED, DECLINED, TIMEOUT
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  order       Order    @relation(fields: [orderId], references: [id])
+  store       Store    @relation(fields: [storeId], references: [id])
+  rider       Rider    @relation(fields: [riderId], references: [id])
+}
+
+model HandoffVerification {
+  id               String   @id @default(uuid())
+  orderId          String   @unique
+  pickupCodeHash   String   // Hashed for security
+  pickupVerifiedAt DateTime?
+  deliveryCodeHash String?  // Optional for pickup orders
+  deliveryVerifiedAt DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  order            Order    @relation(fields: [orderId], references: [id])
+}
+
+// ---------------------------------------------------------
+// FINANCIALS
+// ---------------------------------------------------------
+
+model Payment {
+  id                 String        @id @default(uuid())
+  orderId            String        @unique
+  userId             String
+  providerReference  String?       @unique // E.g., Monnify ref
+  amount             Decimal       @db.Decimal(10, 2)
+  status             PaymentStatus @default(INITIALIZED)
+  metadata           Json?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  order              Order         @relation(fields: [orderId], references: [id])
+  user               User          @relation(fields: [userId], references: [id])
+}
+
+model Refund {
+  id                 String       @id @default(uuid())
+  orderId            String
+  providerReference  String?      @unique
+  amount             Decimal      @db.Decimal(10, 2)
+  status             RefundStatus @default(INITIATED)
+  refundType         RefundType
+  reason             String?
+  metadata           Json?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  order              Order        @relation(fields: [orderId], references: [id])
+}
+
+model Settlement {
+  id          String           @id @default(uuid())
+  orderId     String
+  storeId     String?
+  riderId     String?
+  amount      Decimal          @db.Decimal(10, 2)
+  type        String           // 'VENDOR' or 'RIDER'
+  status      SettlementStatus @default(PENDING)
+  heldReason  String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  order       Order            @relation(fields: [orderId], references: [id])
+  store       Store?           @relation(fields: [storeId], references: [id])
+  rider       Rider?           @relation(fields: [riderId], references: [id])
+}
+
+// ---------------------------------------------------------
+// SUPPORT & DISPUTES
+// ---------------------------------------------------------
+
+model Dispute {
+  id          String            @id @default(uuid())
+  orderId     String
+  userId      String
+  reason      DisputeReason
+  status      DisputeStatus     @default(OPEN)
+  resolution  DisputeResolution?
+  description String?
+  adminNotes  String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  order       Order             @relation(fields: [orderId], references: [id])
+  user        User              @relation(fields: [userId], references: [id])
+}
+
+model SupportTicket {
+  id          String              @id @default(uuid())
+  reference   String              @unique
+  userId      String
+  subject     String
+  status      SupportTicketStatus @default(OPEN)
+  adminNotes  String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  user        User                @relation(fields: [userId], references: [id])
+  messages    SupportMessage[]
+}
+
+model SupportMessage {
+  id          String        @id @default(uuid())
+  ticketId    String
+  senderId    String        // Could be User ID or Admin ID
+  senderType  String        // 'USER' or 'ADMIN'
+  content     String
+  createdAt   DateTime      @default(now())
+
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id])
+}
+
+model Report {
+  id             String   @id @default(uuid())
+  reportingUserId String
+  reportedUserId  String
+  reason         String
+  description    String?
+  status         String   // OPEN, INVESTIGATING, RESOLVED
+  adminNotes     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  reportingUser  User     @relation("ReportingUser", fields: [reportingUserId], references: [id])
+  reportedUser   User     @relation("ReportedUser", fields: [reportedUserId], references: [id])
+}
+
+// ---------------------------------------------------------
+// VERIFICATION
+// ---------------------------------------------------------
+
+model VerificationApplication {
+  id          String             @id @default(uuid())
+  userId      String
+  entityType  String             // 'VENDOR', 'RESTAURANT', 'RIDER'
+  status      VerificationStatus @default(PENDING)
+  reviewerId  String?            // Admin ID
+  notes       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  user        User               @relation(fields: [userId], references: [id])
+  documents   VerificationDocument[]
+}
+
+model VerificationDocument {
+  id             String   @id @default(uuid())
+  applicationId  String
+  documentType   String   // 'ID_CARD', 'SELFIE', 'BUSINESS_PROOF'
+  documentUrl    String   // Secure, private URL
+  createdAt      DateTime @default(now())
+
+  application    VerificationApplication @relation(fields: [applicationId], references: [id])
+}
+
+// ---------------------------------------------------------
+// PLATFORM & ADMIN
+// ---------------------------------------------------------
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  title       String
+  message     String
+  type        String   // 'ORDER', 'SYSTEM', 'PROMO'
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model PlatformSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+}
+
+model AdminAuditLog {
+  id             String   @id @default(uuid())
+  adminAccountId String
+  action         String
+  entityType     String
+  entityId       String?
+  previousValue  Json?
+  newValue       Json?
+  createdAt      DateTime @default(now())
+
+  adminAccount   AdminAccount @relation(fields: [adminAccountId], references: [id])
+}
